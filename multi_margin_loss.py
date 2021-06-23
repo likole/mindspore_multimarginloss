@@ -12,27 +12,21 @@ from mindspore import context
 
 class MyMultiMarginLoss(nn.Cell):
 
-    def __init__(self, margin: float = 1., weight: Optional[Tensor] = None, reduction: str = 'mean') -> None:
+    def __init__(self, margin: float = 1., weight: Optional[Tensor] = None) -> None:
         super(MyMultiMarginLoss, self).__init__()
         assert weight is None or weight.dim() == 1
         self.weight = weight
         self.margin = margin
-        self.reduction = reduction
+        self.on_value, self.off_value = Tensor(1.0, mindspore.float32), Tensor(0.0, mindspore.float32)
+        self.op_sum = ops.ReduceSum(keep_dims=True)
 
     def construct(self, input: Tensor, target: Tensor) -> Tensor:
-        batch_size = input.shape[0]
-        split = ops.Split(0, batch_size)
-        xs = split(input)
-        ys = split(target)
-        loss = 0
-        for x, y in zip(xs, ys):
-            x = x.squeeze(0)
-            tmp = self.margin - x[y] + x
-            if self.weight is not None:
-                tmp = tmp * self.weight[y]
-            loss = loss + ops.clip_by_value(tmp, 0, sys.float_info.max).mean() - self.margin * self.weight[y] / x.shape[
-                0]
-        return loss / batch_size
+        batch_size, cls = input.shape
+        target = ops.OneHot()(target, cls, self.on_value, self.off_value)
+        loss = self.margin - self.op_sum(input * target, 1) + input - target
+        if self.weight is not None:
+            loss = loss * self.op_sum(target * self.weight, 1)
+        return ops.clip_by_value(loss, 0, sys.float_info.max).mean()
 
 
 def test(batch_size=128, cls=20, compare_with_pytorch=False):
@@ -41,9 +35,9 @@ def test(batch_size=128, cls=20, compare_with_pytorch=False):
     y = np.random.randint(0, cls - 1, batch_size)
 
     # mindspore
+    loss = MyMultiMarginLoss(weight=mindspore.Tensor(weight, dtype=mindspore.float32))
     start_time = time.time()
-    print(MyMultiMarginLoss(weight=mindspore.Tensor(weight, dtype=mindspore.float32))(
-        mindspore.Tensor(x, dtype=mindspore.float32), mindspore.Tensor(y, dtype=mindspore.int64)))
+    print(loss(mindspore.Tensor(x, dtype=mindspore.float32), mindspore.Tensor(y, dtype=mindspore.int32)))
     end_time = time.time()
     print("Mindspore time： ", end_time - start_time, (end_time - start_time) / batch_size)
 
@@ -56,7 +50,7 @@ def test(batch_size=128, cls=20, compare_with_pytorch=False):
 
 
 if __name__ == '__main__':
-    context.set_context(mode=context.PYNATIVE_MODE, device_target="CPU")
-    test(128, 20, True)
-    # context.set_context(device_id=4)
-    # test(128, 20, False)
+    # context.set_context(mode=context.PYNATIVE_MODE, device_target="CPU")
+    # test(128, 20, True)
+    context.set_context(device_id=4)
+    test(128, 20, False)
